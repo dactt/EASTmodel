@@ -21,23 +21,35 @@ def get_images(data_path):
     param: data_path :path to direction of data
     return: image file names
     '''
-    pass
+    files = []
+    idx = 0
+    for ext in ['jpg', 'png', 'jpeg', 'JPG']:
+        files.extend(glob.glob(
+            os.path.join(data_path, '*.{}'.format(ext))))
+        idx += 1
+    return files
+
 def load_annotation(p):
     '''
     load anotation form txt file
     param: p : anotation file name
     return: anotation list
     '''
-    pass
+    text_polys = []
+    if not os.path.exists(p):
+        return np.array(text_polys,dtype=np.float32)
+    with open(p,'r') as f:
+        text_poly = f.read()
+    return np.array(text_poly,dtype=np.float32)
+
 def get_text_file(image_file):
     '''
     param: image_file : list of image name
     return: txt file name
     '''
     txt_file = image_file.replace(os.path.basename(image_file).split('.')[1], 'txt')
-    txt_file_name = txt_file.split('/')[-1]
-    txt_file = txt_file.replace(txt_file_name, 'gt_' + txt_file_name)
     return txt_file
+
 def polygon_area(poly):
     '''
     compute area of a polygon
