@@ -1,3 +1,4 @@
+# coding:utf-8
 import glob
 import sys
 import csv
@@ -17,10 +18,6 @@ from shapely.geometry import Polygon
 import tensorflow as tf
 
 def get_images(data_path):
-    '''
-    param: data_path :path to direction of data
-    return: image file names
-    '''
     files = []
     idx = 0
     for ext in ['jpg', 'png', 'jpeg', 'JPG']:
@@ -29,26 +26,31 @@ def get_images(data_path):
         idx += 1
     return files
 
+
 def load_annotation(p):
     '''
-    load anotation form txt file
-    param: p : anotation file name
-    return: anotation list
+    load annotation from the text file
+    :param p:
+    :return:
     '''
     text_polys = []
+    text_tags = []
     if not os.path.exists(p):
-        return np.array(text_polys,dtype=np.float32)
-    with open(p,'r') as f:
-        text_poly = f.read()
-    return np.array(text_poly,dtype=np.float32)
+        return np.array(text_polys, dtype=np.float32)
+    with open(p, 'r') as f:
+        reader = csv.reader(f)
+        for line in reader:
+            label = line[-1]
+            line = [i.strip('\ufeff').strip('\xef\xbb\xbf') for i in line]
 
-def get_text_file(image_file):
-    '''
-    param: image_file : list of image name
-    return: txt file name
-    '''
-    txt_file = image_file.replace(os.path.basename(image_file).split('.')[1], 'txt')
-    return txt_file
+            x1, y1, x2, y2, x3, y3, x4, y4 = list(map(float, line[:8]))
+            text_polys.append([[x1, y1], [x2, y2], [x3, y3], [x4, y4]])
+            if label == '*' or label == '###':
+                text_tags.append(True)
+            else:
+                text_tags.append(False)
+        return np.array(text_polys, dtype=np.float32), np.array(text_tags, dtype=np.bool)
+
 
 def polygon_area(poly):
     '''
@@ -63,28 +65,25 @@ def polygon_area(poly):
         (poly[0][0] - poly[3][0]) * (poly[0][1] + poly[3][1])
     ]
     return np.sum(edge)/2.
-    
-def count_samples(FLAGS):
-    if sys.version_info >= (3, 0):
-        return len([f for f in next(os.walk(FLAGS.training_data_path))[2] if f[-4:] == ".jpg"])
-    else:
-        return len([f for f in os.walk(FLAGS.training_data_path).next()[2] if f[-4:] == ".jpg"])
 
-def check_and_validate_polys(FLAGS, polys, size):
+
+def check_and_validate_polys(FLAGS, polys, tags, size):
     '''
     check so that the text poly is in the same direction,
     and also filter some invalid polygons
     :param polys:
+    :param tags:
     :return:
     '''
     (h, w) = size
     if polys.shape[0] == 0:
         return polys
-    polys[:, :, 0] = np.clip(polys[:, :, 0], 0, w-1)    # corectlization value of polys
+    polys[:, :, 0] = np.clip(polys[:, :, 0], 0, w-1)
     polys[:, :, 1] = np.clip(polys[:, :, 1], 0, h-1)
 
     validated_polys = []
-    for poly in polys:
+    validated_tags = []
+    for poly, tag in zip(polys, tags):
         p_area = polygon_area(poly)
         if abs(p_area) < 1:
             # print poly
@@ -96,20 +95,87 @@ def check_and_validate_polys(FLAGS, polys, size):
                 print('poly in wrong direction')
             poly = poly[(0, 3, 2, 1), :]
         validated_polys.append(poly)
-    return np.array(validated_polys)
+        validated_tags.append(tag)
+    return np.array(validated_polys), np.array(validated_tags)
+
+
+def crop_area(FLAGS, im, polys, tags, crop_background=False, max_tries=50):
+    '''
+    make random crop from the input image
+    :param im:
+    :param polys:
+    :param tags:
+    :param crop_background:
+    :param max_tries:
+    :return:
+    '''
+    h, w, _ = im.shape
+    pad_h = h//10
+    pad_w = w//10
+    h_array = np.zeros((h + pad_h*2), dtype=np.int32)
+    w_array = np.zeros((w + pad_w*2), dtype=np.int32)
+    for poly in polys:
+        poly = np.round(poly, decimals=0).astype(np.int32)
+        minx = np.min(poly[:, 0])
+        maxx = np.max(poly[:, 0])
+        w_array[minx+pad_w:maxx+pad_w] = 1
+        miny = np.min(poly[:, 1])
+        maxy = np.max(poly[:, 1])
+        h_array[miny+pad_h:maxy+pad_h] = 1
+    # ensure the cropped area not across a text
+    h_axis = np.where(h_array == 0)[0]
+    w_axis = np.where(w_array == 0)[0]
+    if len(h_axis) == 0 or len(w_axis) == 0:
+        return im, polys, tags
+    for i in range(max_tries):
+        xx = np.random.choice(w_axis, size=2)
+        xmin = np.min(xx) - pad_w
+        xmax = np.max(xx) - pad_w
+        xmin = np.clip(xmin, 0, w-1)
+        xmax = np.clip(xmax, 0, w-1)
+        yy = np.random.choice(h_axis, size=2)
+        ymin = np.min(yy) - pad_h
+        ymax = np.max(yy) - pad_h
+        ymin = np.clip(ymin, 0, h-1)
+        ymax = np.clip(ymax, 0, h-1)
+        if xmax - xmin < FLAGS.min_crop_side_ratio*w or ymax - ymin < FLAGS.min_crop_side_ratio*h:
+            # area too small
+            continue
+        if polys.shape[0] != 0:
+            poly_axis_in_area = (polys[:, :, 0] >= xmin) & (polys[:, :, 0] <= xmax) \
+                                & (polys[:, :, 1] >= ymin) & (polys[:, :, 1] <= ymax)
+            selected_polys = np.where(np.sum(poly_axis_in_area, axis=1) == 4)[0]
+        else:
+            selected_polys = []
+        if len(selected_polys) == 0:
+            # no text in this area
+            if crop_background:
+                return im[ymin:ymax+1, xmin:xmax+1, :], polys[selected_polys], tags[selected_polys]
+            else:
+                continue
+        im = im[ymin:ymax+1, xmin:xmax+1, :]
+        polys = polys[selected_polys]
+        tags = tags[selected_polys]
+        polys[:, :, 0] -= xmin
+        polys[:, :, 1] -= ymin
+        return im, polys, tags
+
+    return im, polys, tags
+
 
 def shrink_poly(poly, r):
     '''
-    fit a poly inside the origin poly,
+    fit a poly inside the origin poly, maybe bugs here...
     used for generating the score map
     :param poly: the text poly
     :param r: r in the paper
     :return: the shrinked poly
     '''
-    # shrink ratio acrording paper
+    # shrink ratio
     R = 0.3
     # find the longer pair
-    if np.linalg.norm(poly[0] - poly[1]) + np.linalg.norm(poly[2] - poly[3]) > np.linalg.norm(poly[0] - poly[3]) + np.linalg.norm(poly[1] - poly[2]):
+    if np.linalg.norm(poly[0] - poly[1]) + np.linalg.norm(poly[2] - poly[3]) > \
+                    np.linalg.norm(poly[0] - poly[3]) + np.linalg.norm(poly[1] - poly[2]):
         # first move (p0, p1), (p2, p3), then (p0, p3), (p1, p2)
         ## p0, p1
         theta = np.arctan2((poly[1][1] - poly[0][1]), (poly[1][0] - poly[0][0]))
@@ -163,44 +229,20 @@ def shrink_poly(poly, r):
         poly[2][1] -= R * r[2] * np.sin(theta)
     return poly
 
+
 def point_dist_to_line(p1, p2, p3):
     # compute the distance from p3 to p1-p2
     return np.linalg.norm(np.cross(p2 - p1, p1 - p3)) / np.linalg.norm(p2 - p1)
 
-def pad_image(img, input_size, is_train):
-    '''
-    padding image to inout size
-    param: 
-        img : image to padding
-        input_size : size of paded image
-        is_train:
-    return:
-    '''
-    new_h, new_w, _ = img.shape
-    max_h_w_i = np.max([new_h, new_w, input_size])
-    img_padded = np.zeros((max_h_w_i, max_h_w_i, 3), dtype=np.uint8)
-    if is_train:
-        shift_h = np.random.randint(max_h_w_i - new_h + 1)
-        shift_w = np.random.randint(max_h_w_i - new_w + 1)
+
+def fit_line(p1, p2):
+    # fit a line ax+by+c = 0
+    if p1[0] == p1[1]:
+        return [1., 0., -p1[0]]
     else:
-        shift_h = (max_h_w_i - new_h) // 2
-        shift_w = (max_h_w_i - new_w) // 2
-    img_padded[shift_h:new_h+shift_h, shift_w:new_w+shift_w, :] = img.copy()
-    img = img_padded
-    return img, shift_h, shift_w
+        [k, b] = np.polyfit(p1, p2, deg=1)
+        return [k, -1., b]
 
-def resize_image(img, text_polys, input_size, shift_h, shift_w):
-    new_h, new_w, _ = img.shape
-    img = cv2.resize(img, dsize=(input_size, input_size))
-    # pad and resize text polygons
-    resize_ratio_3_x = input_size/float(new_w)
-    resize_ratio_3_y = input_size/float(new_h)
-    text_polys[:, :, 0] += shift_w
-    text_polys[:, :, 1] += shift_h
-    text_polys[:, :, 0] *= resize_ratio_3_x
-    text_polys[:, :, 1] *= resize_ratio_3_y
-
-    return img, text_polys
 
 def line_cross_point(FLAGS, line1, line2):
     # line1 0= ax+by+c, compute the cross point of line1 and line2
@@ -225,13 +267,6 @@ def line_cross_point(FLAGS, line1, line2):
         y = k1*x + b1
     return np.array([x, y], dtype=np.float32)
 
-def fit_line(p1, p2):
-    # fit a line ax+by+c = 0
-    if p1[0] == p1[1]:
-        return [1., 0., -p1[0]]
-    else:
-        [k, b] = np.polyfit(p1, p2, deg=1)
-        return [k, -1., b]
 
 def line_verticle(line, point):
     # get the verticle line from line across point
@@ -243,6 +278,7 @@ def line_verticle(line, point):
         else:
             verticle = [-1./line[0], -1, point[1] - (-1/line[0] * point[0])]
     return verticle
+
 
 def rectangle_from_parallelogram(FLAGS, poly):
     '''
@@ -301,6 +337,7 @@ def rectangle_from_parallelogram(FLAGS, poly):
             new_p2 = line_cross_point(FLAGS, p1p2, p1p2_verticle)
             return np.array([new_p0, p1, new_p2, p3], dtype=np.float32)
 
+
 def sort_rectangle(FLAGS, poly):
     # sort the four coordinates of the polygon, points in poly should be sorted clockwise
     # First find the lowest point
@@ -335,6 +372,7 @@ def sort_rectangle(FLAGS, poly):
             p1_index = (p3_index + 2) % 4
             p2_index = (p3_index + 3) % 4
             return poly[[p0_index, p1_index, p2_index, p3_index]], angle
+
 
 def restore_rectangle_rbox(origin, geometry):
     d = geometry[:, :4]
@@ -407,8 +445,10 @@ def restore_rectangle_rbox(origin, geometry):
         new_p_1 = np.zeros((0, 4, 2))
     return np.concatenate([new_p_0, new_p_1])
 
+
 def restore_rectangle(origin, geometry):
     return restore_rectangle_rbox(origin, geometry)
+
 
 def generate_rbox(FLAGS, im_size, polys, tags):
     h, w = im_size
@@ -534,6 +574,45 @@ def generate_rbox(FLAGS, im_size, polys, tags):
     text_region_boundary_training_mask = 1 - (orig_poly_mask - shrinked_poly_mask)
 
     return score_map, geo_map, overly_small_text_region_training_mask, text_region_boundary_training_mask
+
+def all(iterable):
+    for element in iterable:
+        if not element:
+            return False
+    return True
+
+def get_text_file(image_file):
+    txt_file = image_file.replace(os.path.basename(image_file).split('.')[1], 'txt')
+    txt_file_name = txt_file.split('/')[-1]
+    txt_file = txt_file.replace(txt_file_name, 'gt_' + txt_file_name)
+    return txt_file
+
+def pad_image(img, input_size, is_train):
+    new_h, new_w, _ = img.shape
+    max_h_w_i = np.max([new_h, new_w, input_size])
+    img_padded = np.zeros((max_h_w_i, max_h_w_i, 3), dtype=np.uint8)
+    if is_train:
+        shift_h = np.random.randint(max_h_w_i - new_h + 1)
+        shift_w = np.random.randint(max_h_w_i - new_w + 1)
+    else:
+        shift_h = (max_h_w_i - new_h) // 2
+        shift_w = (max_h_w_i - new_w) // 2
+    img_padded[shift_h:new_h+shift_h, shift_w:new_w+shift_w, :] = img.copy()
+    img = img_padded
+    return img, shift_h, shift_w
+
+def resize_image(img, text_polys, input_size, shift_h, shift_w):
+    new_h, new_w, _ = img.shape
+    img = cv2.resize(img, dsize=(input_size, input_size))
+    # pad and resize text polygons
+    resize_ratio_3_x = input_size/float(new_w)
+    resize_ratio_3_y = input_size/float(new_h)
+    text_polys[:, :, 0] += shift_w
+    text_polys[:, :, 1] += shift_h
+    text_polys[:, :, 0] *= resize_ratio_3_x
+    text_polys[:, :, 1] *= resize_ratio_3_y
+    return img, text_polys
+
 class threadsafe_iter:
     """Takes an iterator/generator and makes it thread-safe by
     serializing call to the `next` method of given iterator/generator.
@@ -588,9 +667,9 @@ def generator(FLAGS, input_size=512, background_ratio=3./8, is_train=True, idx=N
                         print('text file {} does not exists'.format(txt_fn))
                     continue
 
-                text_polys = load_annotation(txt_fn)
+                text_polys, text_tags = load_annotation(txt_fn)
 
-                text_polys = check_and_validate_polys(FLAGS, text_polys, (h, w))
+                text_polys, text_tags = check_and_validate_polys(FLAGS, text_polys, text_tags, (h, w))
 
                 # random scale this image
                 rd_scale = np.random.choice(random_scale)                
@@ -601,16 +680,59 @@ def generator(FLAGS, input_size=512, background_ratio=3./8, is_train=True, idx=N
                 text_polys[:, :, 1] *= rd_scale + y_scale_variation
 
                 # random crop a area from image
-                
-                
-        
-                if text_polys.shape[0] == 0:
-                    continue
-                h, w, _ = im.shape
-                im, shift_h, shift_w = pad_image(im, FLAGS.input_size, is_train)
-                im, text_polys = resize_image(im, text_polys, FLAGS.input_size, shift_h, shift_w)
-                new_h, new_w, _ = im.shape
-                score_map, geo_map, overly_small_text_region_training_mask, text_region_boundary_training_mask = generate_rbox(FLAGS, (new_h, new_w), text_polys)
+                if np.random.rand() < background_ratio:
+                    # crop background
+                    im, text_polys, text_tags = crop_area(FLAGS, im, text_polys, text_tags, crop_background=True)
+                    if text_polys.shape[0] > 0:
+                        # cannot find background
+                        continue
+                    # pad and resize image
+                    im, _, _ = pad_image(im, FLAGS.input_size, is_train)
+                    im = cv2.resize(im, dsize=(input_size, input_size))
+                    score_map = np.zeros((input_size, input_size), dtype=np.uint8)
+                    geo_map_channels = 5 if FLAGS.geometry == 'RBOX' else 8
+                    geo_map = np.zeros((input_size, input_size, geo_map_channels), dtype=np.float32)
+                    overly_small_text_region_training_mask = np.ones((input_size, input_size), dtype=np.uint8)
+                    text_region_boundary_training_mask = np.ones((input_size, input_size), dtype=np.uint8)
+                else:
+                    im, text_polys, text_tags = crop_area(FLAGS, im, text_polys, text_tags, crop_background=False)
+                    if text_polys.shape[0] == 0:
+                        continue
+                    h, w, _ = im.shape
+                    im, shift_h, shift_w = pad_image(im, FLAGS.input_size, is_train)
+                    im, text_polys = resize_image(im, text_polys, FLAGS.input_size, shift_h, shift_w)
+                    new_h, new_w, _ = im.shape
+                    score_map, geo_map, overly_small_text_region_training_mask, text_region_boundary_training_mask = generate_rbox(FLAGS, (new_h, new_w), text_polys, text_tags)
+
+                if vis:
+                    fig, axs = plt.subplots(3, 2, figsize=(20, 30))
+                    axs[0, 0].imshow(im[:, :, ::-1])
+                    axs[0, 0].set_xticks([])
+                    axs[0, 0].set_yticks([])
+                    for poly in text_polys:
+                        poly_h = min(abs(poly[3, 1] - poly[0, 1]), abs(poly[2, 1] - poly[1, 1]))
+                        poly_w = min(abs(poly[1, 0] - poly[0, 0]), abs(poly[2, 0] - poly[3, 0]))
+                        axs[0, 0].add_artist(Patches.Polygon(
+                            poly, facecolor='none', edgecolor='green', linewidth=2, linestyle='-', fill=True))
+                        axs[0, 0].text(poly[0, 0], poly[0, 1], '{:.0f}-{:.0f}'.format(poly_h, poly_w), color='purple')
+                    axs[0, 1].imshow(score_map[::, ::])
+                    axs[0, 1].set_xticks([])
+                    axs[0, 1].set_yticks([])
+                    axs[1, 0].imshow(geo_map[::, ::, 0])
+                    axs[1, 0].set_xticks([])
+                    axs[1, 0].set_yticks([])
+                    axs[1, 1].imshow(geo_map[::, ::, 1])
+                    axs[1, 1].set_xticks([])
+                    axs[1, 1].set_yticks([])
+                    axs[2, 0].imshow(geo_map[::, ::, 2])
+                    axs[2, 0].set_xticks([])
+                    axs[2, 0].set_yticks([])
+                    axs[2, 1].imshow(training_mask[::, ::])
+                    axs[2, 1].set_xticks([])
+                    axs[2, 1].set_yticks([])
+                    plt.tight_layout()
+                    plt.show()
+                    plt.close()
 
                 im = (im / 127.5) - 1.
                 images.append(im[:, :, ::-1].astype(np.float32))
@@ -634,6 +756,8 @@ def generator(FLAGS, input_size=512, background_ratio=3./8, is_train=True, idx=N
                     traceback.print_exc()
                 continue
         epoch += 1
+
+
 
 @threadsafe_generator
 def val_generator(FLAGS, idx=None, is_train=False):
@@ -670,7 +794,7 @@ def val_generator(FLAGS, idx=None, is_train=False):
                 im, shift_h, shift_w = pad_image(im, FLAGS.input_size, is_train)
                 im, text_polys = resize_image(im, text_polys, FLAGS.input_size, shift_h, shift_w)
                 new_h, new_w, _ = im.shape
-                score_map, geo_map, overly_small_text_region_training_mask, text_region_boundary_training_mask = generate_rbox(FLAGS, (new_h, new_w), text_polys)
+                score_map, geo_map, overly_small_text_region_training_mask, text_region_boundary_training_mask = generate_rbox(FLAGS, (new_h, new_w), text_polys, text_tags)
 
                 im = (im / 127.5) - 1.
                 images.append(im[:, :, ::-1].astype(np.float32))
@@ -694,7 +818,15 @@ def val_generator(FLAGS, idx=None, is_train=False):
                     traceback.print_exc()
                 continue
         epoch += 1
-        
+
+
+def count_samples(FLAGS):
+    if sys.version_info >= (3, 0):
+        return len([f for f in next(os.walk(FLAGS.training_data_path))[2] if f[-4:] == ".jpg"])
+    else:
+        return len([f for f in os.walk(FLAGS.training_data_path).next()[2] if f[-4:] == ".jpg"])
+
+
 def load_data_process(args):
     (image_file, FLAGS, is_train) = args
     try:
@@ -744,3 +876,7 @@ def load_data(FLAGS, is_train=False):
 
 
     return np.array(images), np.array(overly_small_text_region_training_masks), np.array(text_region_boundary_training_masks), np.array(score_maps), np.array(geo_maps)
+
+
+if __name__ == '__main__':
+    pass

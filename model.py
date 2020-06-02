@@ -42,7 +42,7 @@ class EAST_model:
 
         # state 3 feature-merging
         x = Lambda(uppool, name='uppool_3')(x)
-        x = concatenate([x, ZeroPadding2D(((1, 0),(1, 0)))(resnet.get_layer(index = 38).output)], axis=3)
+        x = concatenate([x, resnet.get_layer(index= 38).output], axis=3)
         x = Conv2D(32, (1, 1), padding='same', kernel_regularizer=regularizers.l2(1e-5))(x)
         x = BatchNormalization(momentum=0.997, epsilon=1e-5, scale=True)(x)
         x = Activation('relu')(x)
