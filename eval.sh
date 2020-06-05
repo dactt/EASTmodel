@@ -1,0 +1,1 @@
+python3 eval.py --image=/home/list_99/Python/opencv-text-detection/dataset/testing_data/images/82200067_0069.png --model_path=/home/list_99/Python/EAST/model-120.h5

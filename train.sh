@@ -1,0 +1,1 @@
+python train.py --input_size=512 --batch_size=12 --nb_workers=6 --training_data_path=/content/ICDAR2013+2015/train_data --validation_data_path=/content/val_data_latin --checkpoint_path=/content/drive/My\ Drive/Data/tmp/icdar2015_east_resnet50
