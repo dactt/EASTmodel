@@ -8,14 +8,11 @@ import tensorflow as tf
 from keras.models import load_model, model_from_json
 
 import nms
-from model import *
-from losses import *
 from data_processor import restore_rectangle
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--test_data_path', type=str, default='../data/ICDAR2015/test_data')
-parser.add_argument('--gpu_list', type=str, default='0')
-parser.add_argument('--model_path', type=str, default='/home/list_99/Python/EAST/model-120.h5')
+parser.add_argument('--test_data_path', type=str, default='')
+parser.add_argument('--model_path', type=str, default='/home/list_99/Python/EASTmodel/model-120.h5')
 parser.add_argument('--image',type=str,default='/home/list_99/Python/opencv-text-detection/images/car_wash.png')
 FLAGS = parser.parse_args()
 
@@ -113,7 +110,7 @@ def main(argv=None):
     json_file = open(os.path.join('/'.join(FLAGS.model_path.split('/')[0:-1]), 'model.json'), 'r')
     loaded_model_json = json_file.read()
     json_file.close()
-    model = model_from_json(loaded_model_json, custom_objects={'tf': tf, 'RESIZE_FACTOR': RESIZE_FACTOR})
+    model = model_from_json(loaded_model_json, custom_objects={'tf': tf, 'RESIZE_FACTOR': 2})
     model.load_weights(FLAGS.model_path)
 
     img_file = FLAGS.image
