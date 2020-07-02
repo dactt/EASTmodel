@@ -13,7 +13,7 @@ from data_processor import restore_rectangle
 parser = argparse.ArgumentParser()
 parser.add_argument('--test_data_path', type=str, default='')
 parser.add_argument('--model_path', type=str, default='/home/list_99/Python/EASTmodel/model-120.h5')
-parser.add_argument('--image',type=str,default='/home/list_99/Python/opencv-text-detection/images/car_wash.png')
+parser.add_argument('--image',type=str,default='/home/list_99/Python/opencv-text-detection/dataset/testing_data/images/82200067_0069.png')
 FLAGS = parser.parse_args()
 
 
@@ -132,7 +132,7 @@ def main(argv=None):
     boxes, timer = detect(score_map=score_map, geo_map=geo_map, timer=timer)
     print('{} : net {:.0f}ms, restore {:.0f}ms, nms {:.0f}ms'.format(
         img_file, timer['net']*1000, timer['restore']*1000, timer['nms']*1000))
-
+    print(boxes.shape)
     if boxes is not None:
         boxes = boxes[:, :8].reshape((-1, 4, 2))
         boxes[:, :, 0] /= ratio_w
@@ -146,12 +146,13 @@ def main(argv=None):
         for box in boxes:
             # to avoid submitting errors
             box = sort_poly(box.astype(np.int32))
-            if np.linalg.norm(box[0] - box[1]) < 5 or np.linalg.norm(box[3]-box[0]) < 5:
-                continue
+            #if np.linalg.norm(box[0] - box[1]) < 5 or np.linalg.norm(box[3]-box[0]) < 5:
+                #continue
             cv2.polylines(img[:, :, ::-1], [box.astype(np.int32).reshape((-1, 1, 2))], True, color=(0, 255, 0))
 
         
     cv2.imshow('test', img[:, :, ::-1])
+    cv2.imwrite('test2.png',img[:, :, ::-1])
     cv2.waitKey(0)
 
 if __name__ == '__main__':
