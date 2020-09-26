@@ -19,4 +19,4 @@ scipy==1.4.1
 Shapely==1.7.0
 sklearn-crfsuite==0.3.6
 tensorboard==1.14.0
-tensorflow==1.14.0
+tensorflow==1.15.4
